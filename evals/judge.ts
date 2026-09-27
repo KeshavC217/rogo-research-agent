@@ -60,7 +60,7 @@ ${JSON.stringify({ companies, financials, documents })}
 
 Score each criterion from 1 to 5 (5 excellent, 3 acceptable with clear problems, 1 fails):
 
-- answered: Does it directly answer the question that was asked? Reasonable handling of ambiguity, and saying clearly when something is outside the dataset, count as answering.
+- answered: Does it directly answer the question that was asked? Saying clearly when something is outside the dataset counts as answering. The assistant is instructed to ask a short clarifying question when the question is genuinely ambiguous, and to make a stated assumption instead if it has already asked and the reply didn't resolve it. A well-targeted clarifying question to a genuinely ambiguous question deserves full marks; asking when the question was clear, or asking again after an unresolved clarification, should score low.
 - accuracy: Check every figure and factual claim against the dataset. Penalise wrong or invented numbers heavily. Also penalise omitting a caveat that would change an analyst's conclusion (e.g. unfiled or preliminary periods, acquired vs organic growth).
 - conciseness: Is it as short as it can be while still complete? Penalise padding, repetition, narrating the research process, and tables or headings that add length without adding clarity.
 

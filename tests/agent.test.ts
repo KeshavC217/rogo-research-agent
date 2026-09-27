@@ -103,6 +103,7 @@ describe("runAgent", () => {
     const system = JSON.stringify(first.system);
     expect(system).toContain("Acme Corp");
     expect(system).toMatch(/final answer/i);
+    expect(system).toMatch(/clarifying question/i);
   });
 
   it("runs requested tools and feeds results back to the model", async () => {

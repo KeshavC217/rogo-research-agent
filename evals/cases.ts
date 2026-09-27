@@ -19,7 +19,8 @@ export const cases: EvalCase[] = [
     question: "Compare Acme and Globex and tell me which one appears to be growing faster.",
     notes:
       '"Acme" is ambiguous: Acme Corp (FY2025 +5.5%) and Acme Robotics (+47%) are unrelated companies. ' +
-      "A strong answer resolves or flags this. Globex grew ~2.1% in FY2025 with only ~0.6% organic.",
+      "The agent should ask which Acme is meant (naming both) rather than guess; a short clarifying question " +
+      "is a full-marks response. Globex grew ~2.1% in FY2025 with only ~0.6% organic.",
   },
   {
     id: "umbrella-risks",
@@ -68,5 +69,20 @@ export const cases: EvalCase[] = [
     notes:
       '"its" refers to Initech from the earlier turn. Initech gross margin ~74-75% vs Acme Corp ~38-40%; ' +
       "operating margin also higher at Initech. Latest filed year for Initech is FY2024.",
+  },
+  {
+    id: "clarification-unresolved",
+    history: [
+      {
+        question: "Compare Acme and Globex and tell me which one appears to be growing faster.",
+        answer:
+          'Which Acme do you mean: Acme Corp (ACME, industrial automation) or Acme Robotics (ACMR, collaborative robots)? They are unrelated companies.',
+      },
+    ],
+    question: "not sure, whichever",
+    notes:
+      "The agent already asked and the reply doesn't resolve it, so it must NOT ask again. It should state an " +
+      "assumption (or cover both Acmes briefly) and answer: Acme Robotics +47% and Acme Corp +5.5% in FY2025 " +
+      "both beat Globex (+2.1%, ~0.6% organic).",
   },
 ];
