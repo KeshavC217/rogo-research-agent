@@ -73,6 +73,28 @@ async function callModel(
   return response;
 }
 
+/** Runs one tool call. Never throws: failures become a result the model can read. */
+async function runTool(
+  use: Anthropic.ToolUseBlock,
+  onEvent: (event: AgentEvent) => void,
+): Promise<Anthropic.ToolResultBlockParam> {
+  const startedAt = Date.now();
+  onEvent({ type: "tool_start", name: use.name, input: use.input });
+
+  let content: string;
+  try {
+    const output = await executeTool(use.name, use.input as Record<string, unknown>);
+    content = JSON.stringify(output);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    content = `${use.name} returned: ${message}`;
+    onEvent({ type: "tool_failed", name: use.name, message });
+  }
+
+  onEvent({ type: "tool_end", name: use.name, ms: Date.now() - startedAt });
+  return { type: "tool_result", tool_use_id: use.id, content };
+}
+
 export async function runAgent(
   question: string,
   onEvent: (event: AgentEvent) => void,
@@ -102,25 +124,9 @@ export async function runAgent(
       break;
     }
 
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-    for (const use of toolUses) {
-      const startedAt = Date.now();
-      onEvent({ type: "tool_start", name: use.name, input: use.input });
-
-      let content: string;
-      try {
-        const output = await executeTool(use.name, use.input as Record<string, unknown>);
-        content = JSON.stringify(output);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        content = `${use.name} returned: ${message}`;
-        onEvent({ type: "tool_failed", name: use.name, message });
-      }
-
-      onEvent({ type: "tool_end", name: use.name, ms: Date.now() - startedAt });
-      toolResults.push({ type: "tool_result", tool_use_id: use.id, content });
-    }
+    // Tool calls within one turn are independent, so run them concurrently.
+    // Promise.all keeps results in request order.
+    const toolResults = await Promise.all(toolUses.map((use) => runTool(use, onEvent)));
 
     messages.push({ role: "user", content: toolResults });
   }

@@ -125,6 +125,54 @@ describe("runAgent", () => {
     expect(mockedExecuteTool).toHaveBeenCalledTimes(2);
   });
 
+  it("runs tool calls from the same turn concurrently", async () => {
+    // Hold each tool call open until the test releases it.
+    const pending = new Map<string, () => void>();
+    mockedExecuteTool.mockImplementation(
+      (_name, input) =>
+        new Promise((resolve) => pending.set(String(input.company), () => resolve(input))),
+    );
+    scriptModel(
+      toolResponse(
+        ["a", "getFinancials", { company: "Acme Corp" }],
+        ["b", "getFinancials", { company: "Globex Inc" }],
+      ),
+      textResponse("done"),
+    );
+
+    const result = run("Compare Acme and Globex");
+    await vi.waitFor(() => expect(pending.size).toBe(2));
+
+    // Both started before either finished. Finish them out of order.
+    pending.get("Globex Inc")!();
+    pending.get("Acme Corp")!();
+    await result;
+
+    const toolResults = sent[1].messages.at(-1)!.content as Anthropic.ToolResultBlockParam[];
+    expect(toolResults.map((r) => r.tool_use_id)).toEqual(["a", "b"]);
+  });
+
+  it("still returns the other results when one parallel tool call fails", async () => {
+    mockedExecuteTool.mockImplementation(async (_name, input) => {
+      if (input.company === "Hooli") throw new ToolError("no financials found");
+      return { ok: true };
+    });
+    scriptModel(
+      toolResponse(
+        ["a", "getFinancials", { company: "Hooli" }],
+        ["b", "getFinancials", { company: "Acme Corp" }],
+      ),
+      textResponse("done"),
+    );
+
+    await run("Compare Hooli and Acme");
+
+    const toolResults = sent[1].messages.at(-1)!.content as Anthropic.ToolResultBlockParam[];
+    expect(toolResults.map((r) => r.tool_use_id)).toEqual(["a", "b"]);
+    expect(String(toolResults[0].content)).toContain("no financials found");
+    expect(toolResults[1].content).toBe(JSON.stringify({ ok: true }));
+  });
+
   it("reports a failing tool to the model and keeps going", async () => {
     mockedExecuteTool.mockRejectedValue(new ToolError('no financials found for "Acme"'));
     scriptModel(
