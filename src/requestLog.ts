@@ -11,6 +11,8 @@ export interface RequestStats {
   modelCalls: number;
   modelMs: number;
   inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   outputTokens: number;
   toolCalls: number;
   toolFailures: number;
@@ -27,6 +29,8 @@ export function createRequestLog(
     modelCalls: 0,
     modelMs: 0,
     inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     outputTokens: 0,
     toolCalls: 0,
     toolFailures: 0,
@@ -38,6 +42,13 @@ export function createRequestLog(
 
   function onEvent(event: AgentEvent) {
     switch (event.type) {
+      case "history":
+        log(
+          "chat",
+          `history ${event.kept} turns (~${event.estimatedTokens} tokens)` +
+            (event.dropped ? `, dropped ${event.dropped} oldest` : ""),
+        );
+        break;
       case "iteration":
         stats.iterations = event.n;
         log("agent", `iteration ${event.n}`);
@@ -46,11 +57,14 @@ export function createRequestLog(
         stats.modelCalls++;
         stats.modelMs += event.ms;
         stats.inputTokens += event.inputTokens;
+        stats.cacheReadTokens += event.cacheReadTokens;
+        stats.cacheWriteTokens += event.cacheWriteTokens;
         stats.outputTokens += event.outputTokens;
         log(
           "model",
           `${event.model} (${event.ms}ms) ` +
-            `in=${event.inputTokens} out=${event.outputTokens} stop=${event.stopReason}`,
+            `in=${event.inputTokens} cache_read=${event.cacheReadTokens} ` +
+            `cache_write=${event.cacheWriteTokens} out=${event.outputTokens} stop=${event.stopReason}`,
         );
         break;
       case "tool_start":
@@ -82,7 +96,8 @@ export function createRequestLog(
         `${elapsed()} · ${s.iterations} iterations · ` +
           `${s.modelCalls} model calls (${s.modelMs}ms) · ` +
           `${s.toolCalls} tool calls (${s.toolMs}ms, ${s.toolFailures} failed) · ` +
-          `tokens in=${s.inputTokens} out=${s.outputTokens}`,
+          `tokens in=${s.inputTokens} cache_read=${s.cacheReadTokens} ` +
+          `cache_write=${s.cacheWriteTokens} out=${s.outputTokens}`,
       );
     },
     error(err: unknown) {

@@ -66,6 +66,15 @@ Score each criterion from 1 to 5 (5 excellent, 3 acceptable with clear problems,
 
 Grader notes for each question describe what a strong answer gets right. Use them as guidance, but verify against the dataset yourself.`;
 
+/** Earlier turns, so the judge can interpret follow-ups like "what about its margins?". */
+function formatHistory(testCase: EvalCase): string {
+  if (!testCase.history?.length) return "";
+  const turns = testCase.history
+    .map((t) => `<turn>\n<question>${t.question}</question>\n<answer>${t.answer}</answer>\n</turn>`)
+    .join("\n");
+  return `<earlier_conversation>\n${turns}\n</earlier_conversation>\n\n`;
+}
+
 export async function judge(testCase: EvalCase, answer: string): Promise<Verdict> {
   const response = await client.beta.messages.create({
     model: JUDGE_MODEL,
@@ -73,13 +82,14 @@ export async function judge(testCase: EvalCase, answer: string): Promise<Verdict
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
     thinking: { type: "adaptive" },
-    cache_control: { type: "ephemeral" },
-    system: SYSTEM_PROMPT,
+    // Breakpoint at the end of the shared dataset, not on the per-case message,
+    // so every judge call after the first reads the dataset from cache.
+    system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
     output_config: { format: { type: "json_schema", schema: VERDICT_SCHEMA } },
     messages: [
       {
         role: "user",
-        content: `<question>${testCase.question}</question>
+        content: `${formatHistory(testCase)}<question>${testCase.question}</question>
 
 <grader_notes>${testCase.notes}</grader_notes>
 

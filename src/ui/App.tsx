@@ -3,6 +3,25 @@ import { useState } from "react";
 interface Message {
   role: "user" | "assistant";
   text: string;
+  /** Error replies are shown but never sent back to the agent as history. */
+  error?: boolean;
+}
+
+interface ChatTurn {
+  question: string;
+  answer: string;
+}
+
+/** Pairs each question with the answer that followed it, skipping failed turns. */
+function toHistory(messages: Message[]): ChatTurn[] {
+  const turns: ChatTurn[] = [];
+  messages.forEach((m, i) => {
+    const reply = messages[i + 1];
+    if (m.role === "user" && reply?.role === "assistant" && !reply.error) {
+      turns.push({ question: m.text, answer: reply.text });
+    }
+  });
+  return turns;
 }
 
 const EXAMPLES = [
@@ -20,6 +39,7 @@ export function App() {
   async function send(question: string) {
     if (!question.trim() || busy) return;
 
+    const history = toHistory(messages);
     setMessages((prev) => [...prev, { role: "user", text: question }]);
     setInput("");
     setBusy(true);
@@ -28,17 +48,19 @@ export function App() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: question }),
+        body: JSON.stringify({ message: question, history }),
       });
       const data = await res.json();
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", text: data.answer ?? data.error },
+        res.ok && data.answer
+          ? { role: "assistant", text: data.answer }
+          : { role: "assistant", text: data.error ?? "No answer returned.", error: true },
       ]);
     } catch (err) {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", text: `Something went wrong: ${String(err)}` },
+        { role: "assistant", text: `Something went wrong: ${String(err)}`, error: true },
       ]);
     }
 

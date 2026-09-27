@@ -39,7 +39,43 @@ describe("App", () => {
     expect(screen.getByText("Acme growth?")).toBeTruthy();
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/chat");
-    expect(JSON.parse(init.body)).toMatchObject({ message: "Acme growth?" });
+    expect(JSON.parse(init.body)).toEqual({ message: "Acme growth?", history: [] });
+  });
+
+  it("sends earlier questions and answers as history on follow-ups", async () => {
+    const input = () => screen.getByPlaceholderText(/ask a research question/i);
+    respondWith({ answer: "Initech grew 14.8%." });
+    render(<App />);
+    await userEvent.type(input(), "How is Initech?");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+    await screen.findByText("Initech grew 14.8%.");
+
+    respondWith({ answer: "Margins are 74.8%." });
+    await userEvent.type(input(), "And margins?");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+    await screen.findByText("Margins are 74.8%.");
+
+    const body = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(body).toEqual({
+      message: "And margins?",
+      history: [{ question: "How is Initech?", answer: "Initech grew 14.8%." }],
+    });
+  });
+
+  it("does not send failed turns as history", async () => {
+    const input = () => screen.getByPlaceholderText(/ask a research question/i);
+    respondWith({ error: "model overloaded" }, 500);
+    render(<App />);
+    await userEvent.type(input(), "How is Initech?");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+    await screen.findByText(/model overloaded/);
+
+    respondWith({ answer: "ok" });
+    await userEvent.type(input(), "Try again");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+    await screen.findByText("ok");
+
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).history).toEqual([]);
   });
 
   it("sends an example question when clicked", async () => {

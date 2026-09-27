@@ -37,7 +37,7 @@ async function runCase(testCase: EvalCase): Promise<CaseResult> {
     const result = await runAgent(testCase.question, (event) => {
       log.onEvent(event);
       if (event.type === "tool_start") toolCalls.push({ name: event.name, input: event.input });
-    });
+    }, testCase.history);
     answer = result.answer;
   } catch (err) {
     return { ...base, ms: Date.now() - startedAt, error: `agent: ${String(err)}` };
@@ -77,7 +77,7 @@ function printScorecard(results: CaseResult[]) {
     tools: r.stats.toolCalls,
     "tool fails": r.stats.toolFailures,
     iters: r.stats.iterations,
-    "tokens in/out": `${r.stats.inputTokens}/${r.stats.outputTokens}`,
+    "tokens in/cached/out": `${r.stats.inputTokens}/${r.stats.cacheReadTokens}/${r.stats.outputTokens}`,
   }));
   console.table(rows);
 

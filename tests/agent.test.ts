@@ -15,7 +15,13 @@ vi.mock("../src/tools.ts", async (importOriginal) => ({
   executeTool: vi.fn(),
 }));
 
-import { runAgent, type AgentEvent } from "../src/agent.ts";
+import {
+  estimateTokens,
+  runAgent,
+  windowHistory,
+  type AgentEvent,
+  type ChatTurn,
+} from "../src/agent.ts";
 import { executeTool, ToolError } from "../src/tools.ts";
 
 const mockedExecuteTool = vi.mocked(executeTool);
@@ -24,7 +30,12 @@ function textResponse(text: string): Partial<Anthropic.Message> {
   return {
     content: [{ type: "text", text, citations: null }],
     stop_reason: "end_turn",
-    usage: { input_tokens: 100, output_tokens: 20 } as Anthropic.Usage,
+    usage: {
+      input_tokens: 100,
+      output_tokens: 20,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    } as Anthropic.Usage,
   };
 }
 
@@ -32,7 +43,12 @@ function toolResponse(...calls: [id: string, name: string, input: object][]) {
   return {
     content: calls.map(([id, name, input]) => ({ type: "tool_use", id, name, input })),
     stop_reason: "tool_use",
-    usage: { input_tokens: 100, output_tokens: 10 },
+    usage: {
+      input_tokens: 100,
+      output_tokens: 10,
+      cache_read_input_tokens: 1400,
+      cache_creation_input_tokens: 50,
+    },
   } as Partial<Anthropic.Message>;
 }
 
@@ -51,9 +67,9 @@ function scriptModel(...responses: Partial<Anthropic.Message>[]) {
 /** Every model request, as it was sent. */
 let sent: Anthropic.MessageCreateParams[] = [];
 
-async function run(question: string) {
+async function run(question: string, history?: ChatTurn[]) {
   const events: AgentEvent[] = [];
-  const result = await runAgent(question, (e) => events.push(e));
+  const result = await runAgent(question, (e) => events.push(e), history);
   return { ...result, events };
 }
 
@@ -84,8 +100,9 @@ describe("runAgent", () => {
     const [first] = sent;
     expect(first.messages[0]).toEqual({ role: "user", content: "What does Acme do?" });
     expect(first.tools?.length).toBeGreaterThan(0);
-    expect(first.system).toContain("Acme Corp");
-    expect(first.system).toMatch(/final answer/i);
+    const system = JSON.stringify(first.system);
+    expect(system).toContain("Acme Corp");
+    expect(system).toMatch(/final answer/i);
   });
 
   it("runs requested tools and feeds results back to the model", async () => {
@@ -198,7 +215,9 @@ describe("runAgent", () => {
 
     const { events } = await run("Find Acme");
 
-    expect(events.map((e) => e.type).filter((t) => t !== "model_call")).toEqual([
+    expect(
+      events.map((e) => e.type).filter((t) => t !== "model_call" && t !== "history"),
+    ).toEqual([
       "iteration",
       "tool_start",
       "tool_end",
@@ -218,6 +237,8 @@ describe("runAgent", () => {
       model: expect.any(String),
       ms: expect.any(Number),
       inputTokens: 100,
+      cacheReadTokens: 1400,
+      cacheWriteTokens: 50,
       outputTokens: 10,
       stopReason: "tool_use",
     });
@@ -290,5 +311,91 @@ describe("runAgent", () => {
     create.mockRejectedValue(new Error("overloaded"));
 
     await expect(run("anything")).rejects.toThrow("overloaded");
+  });
+});
+
+describe("chat history", () => {
+  const turn = (q: string, a: string): ChatTurn => ({ question: q, answer: a });
+
+  it("sends prior turns as alternating user/assistant messages before the question", async () => {
+    scriptModel(textResponse("Its gross margin was 74.8%."));
+
+    await run("What about its margins?", [
+      turn("How is Initech doing?", "Initech grew 14.8% in FY2024."),
+    ]);
+
+    expect(sent[0].messages).toEqual([
+      { role: "user", content: "How is Initech doing?" },
+      { role: "assistant", content: "Initech grew 14.8% in FY2024." },
+      { role: "user", content: "What about its margins?" },
+    ]);
+  });
+
+  it("reports how much history was kept", async () => {
+    scriptModel(textResponse("ok"));
+
+    const { events } = await run("next", [turn("q1", "a1"), turn("q2", "a2")]);
+
+    expect(events[0]).toMatchObject({ type: "history", kept: 2, dropped: 0 });
+  });
+
+  it("drops the oldest turns once history exceeds the token budget", async () => {
+    scriptModel(textResponse("ok"));
+    // ~40k estimated tokens per turn: only the two most recent fit in 100k.
+    const big = "x".repeat(160_000);
+    const history = [turn("oldest", big), turn("middle", big), turn("newest", big)];
+
+    const { events } = await run("next", history);
+
+    const questions = sent[0].messages.filter((m) => m.role === "user").map((m) => m.content);
+    expect(questions).toEqual(["middle", "newest", "next"]);
+    expect(events[0]).toMatchObject({ type: "history", kept: 2, dropped: 1 });
+  });
+});
+
+describe("windowHistory", () => {
+  const turn = (q: string, a: string): ChatTurn => ({ question: q, answer: a });
+
+  it("keeps everything that fits", () => {
+    const history = [turn("a", "b"), turn("c", "d")];
+    expect(windowHistory(history, 1000).turns).toEqual(history);
+  });
+
+  it("keeps the most recent turns and never splits a turn", () => {
+    const history = [turn("q1", "x".repeat(400)), turn("q2", "x".repeat(400))];
+    const perTurn = estimateTokens("q1") + estimateTokens("x".repeat(400));
+
+    const { turns, estimatedTokens } = windowHistory(history, perTurn + 1);
+
+    expect(turns).toEqual([history[1]]);
+    expect(estimatedTokens).toBe(perTurn);
+  });
+
+  it("returns nothing when even the latest turn is over budget", () => {
+    expect(windowHistory([turn("q", "x".repeat(1000))], 10).turns).toEqual([]);
+  });
+});
+
+describe("prompt caching", () => {
+  it("marks the system prompt as a cache breakpoint and enables automatic caching", async () => {
+    scriptModel(textResponse("ok"));
+
+    await run("anything");
+
+    const [params] = sent;
+    expect(params.cache_control).toEqual({ type: "ephemeral" });
+    const system = params.system as Anthropic.TextBlockParam[];
+    expect(system.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("sends a byte-identical system prompt on every call so the cache can hit", async () => {
+    mockedExecuteTool.mockResolvedValue([]);
+    scriptModel(toolResponse(["t1", "searchCompanies", { query: "a" }]), textResponse("ok"));
+    await run("first");
+    scriptModel(textResponse("ok"));
+    await run("second", [{ question: "first", answer: "ok" }]);
+
+    const systems = sent.map((p) => JSON.stringify(p.system));
+    expect(new Set(systems).size).toBe(1);
   });
 });

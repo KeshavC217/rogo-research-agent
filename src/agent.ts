@@ -9,6 +9,9 @@ import { executeTool, toolSchemas } from "./tools.ts";
 const MODEL = process.env.ROGO_MODEL ?? "claude-sonnet-5";
 const MAX_ITERATIONS = 12;
 
+/** Budget for prior chat turns sent with each question. Oldest turns drop first. */
+export const HISTORY_TOKEN_BUDGET = 100_000;
+
 const client = new Anthropic();
 
 const SYSTEM_PROMPT = `You are Rogo Research, an assistant that answers questions about companies for financial analysts.
@@ -29,13 +32,23 @@ ${companies
   .join("\n")}
 `;
 
+/** One completed exchange in a chat: the analyst's question and the final answer. */
+export interface ChatTurn {
+  question: string;
+  answer: string;
+}
+
 export type AgentEvent =
+  | { type: "history"; kept: number; dropped: number; estimatedTokens: number }
   | { type: "iteration"; n: number }
   | {
       type: "model_call";
       model: string;
       ms: number;
+      /** Uncached input tokens; cached tokens are reported separately below. */
       inputTokens: number;
+      cacheReadTokens: number;
+      cacheWriteTokens: number;
       outputTokens: number;
       stopReason: string | null;
     }
@@ -55,18 +68,58 @@ function textOf(message: Anthropic.Message): string {
     .join("\n");
 }
 
+/** Rough token estimate (~4 characters per token); good enough for a context budget. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Sliding window over the chat: keeps the most recent whole turns that fit in
+ * the budget and drops older ones.
+ */
+export function windowHistory(
+  history: ChatTurn[],
+  budget: number = HISTORY_TOKEN_BUDGET,
+): { turns: ChatTurn[]; estimatedTokens: number } {
+  let used = 0;
+  let start = history.length;
+  while (start > 0) {
+    const turn = history[start - 1];
+    const cost = estimateTokens(turn.question) + estimateTokens(turn.answer);
+    if (used + cost > budget) break;
+    used += cost;
+    start--;
+  }
+  return { turns: history.slice(start), estimatedTokens: used };
+}
+
+// The system prompt (and the tools, which render before it) is identical on
+// every request, so mark it as a cache breakpoint. It stays cached even when the
+// history window slides and the conversation prefix changes.
+const SYSTEM: Anthropic.TextBlockParam[] = [
+  { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+];
+
 /** Calls the model and reports its latency and token usage. */
 async function callModel(
   params: Omit<Anthropic.MessageCreateParamsNonStreaming, "model">,
   onEvent: (event: AgentEvent) => void,
 ): Promise<Anthropic.Message> {
   const startedAt = Date.now();
-  const response = await client.messages.create({ model: MODEL, ...params });
+  const response = await client.messages.create({
+    model: MODEL,
+    // Automatic caching: moves a breakpoint to the end of the conversation on
+    // each call, so tool-loop iterations and follow-up questions reuse the prefix.
+    cache_control: { type: "ephemeral" },
+    ...params,
+  });
   onEvent({
     type: "model_call",
     model: MODEL,
     ms: Date.now() - startedAt,
     inputTokens: response.usage.input_tokens,
+    cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: response.usage.cache_creation_input_tokens ?? 0,
     outputTokens: response.usage.output_tokens,
     stopReason: response.stop_reason,
   });
@@ -98,8 +151,23 @@ async function runTool(
 export async function runAgent(
   question: string,
   onEvent: (event: AgentEvent) => void,
+  history: ChatTurn[] = [],
 ): Promise<AgentResult> {
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content: question }];
+  const { turns, estimatedTokens } = windowHistory(history);
+  onEvent({
+    type: "history",
+    kept: turns.length,
+    dropped: history.length - turns.length,
+    estimatedTokens,
+  });
+
+  const messages: Anthropic.MessageParam[] = [
+    ...turns.flatMap((turn): Anthropic.MessageParam[] => [
+      { role: "user", content: turn.question },
+      { role: "assistant", content: turn.answer },
+    ]),
+    { role: "user", content: question },
+  ];
 
   let answer = "";
   let iterations = 0;
@@ -109,7 +177,7 @@ export async function runAgent(
     onEvent({ type: "iteration", n: iterations });
 
     const response = await callModel(
-      { max_tokens: 16000, system: SYSTEM_PROMPT, tools: toolSchemas, messages },
+      { max_tokens: 16000, system: SYSTEM, tools: toolSchemas, messages },
       onEvent,
     );
 

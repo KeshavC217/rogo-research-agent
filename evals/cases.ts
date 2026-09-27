@@ -3,10 +3,14 @@
  * judge still checks every claim against the full dataset, not just these notes.
  */
 
+import type { ChatTurn } from "../src/agent.ts";
+
 export interface EvalCase {
   id: string;
   question: string;
   notes: string;
+  /** Earlier turns in the same chat, for follow-up questions. */
+  history?: ChatTurn[];
 }
 
 export const cases: EvalCase[] = [
@@ -49,5 +53,20 @@ export const cases: EvalCase[] = [
     id: "out-of-coverage",
     question: "What was Hooli's revenue last year?",
     notes: "Hooli is not in the coverage universe. The answer must say so and must not invent figures.",
+  },
+  {
+    id: "follow-up-pronoun",
+    history: [
+      {
+        question: "How is Initech's subscription transition going?",
+        answer:
+          "Well so far. Subscription was 62% of FY2024 revenue (subscription +26%, perpetual -19%), " +
+          "and preliminary FY2025 guidance puts it at ~68%. FY2025 results are not yet filed.",
+      },
+    ],
+    question: "How do its margins compare with Acme Corp's?",
+    notes:
+      '"its" refers to Initech from the earlier turn. Initech gross margin ~74-75% vs Acme Corp ~38-40%; ' +
+      "operating margin also higher at Initech. Latest filed year for Initech is FY2024.",
   },
 ];
