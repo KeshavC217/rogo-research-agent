@@ -16,7 +16,7 @@ const FINAL_ITERATION_NOTE =
   "Answer now from what you've gathered, and say briefly what you couldn't check.";
 
 /** Budget for prior chat turns sent with each question. Oldest turns drop first. */
-export const HISTORY_TOKEN_BUDGET = 100_000;
+export const HISTORY_TOKEN_BUDGET = 25_000;
 
 const client = new Anthropic();
 

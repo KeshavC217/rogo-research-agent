@@ -17,6 +17,7 @@ vi.mock("../src/tools.ts", async (importOriginal) => ({
 
 import {
   estimateTokens,
+  HISTORY_TOKEN_BUDGET,
   MAX_ITERATIONS,
   runAgent,
   windowHistory,
@@ -422,8 +423,8 @@ describe("chat history", () => {
 
   it("drops the oldest turns once history exceeds the token budget", async () => {
     scriptModel(textResponse("ok"));
-    // ~40k estimated tokens per turn: only the two most recent fit in 100k.
-    const big = "x".repeat(160_000);
+    // Each turn is ~40% of the budget, so only the two most recent fit.
+    const big = "x".repeat(HISTORY_TOKEN_BUDGET * 0.4 * 4);
     const history = [turn("oldest", big), turn("middle", big), turn("newest", big)];
 
     const { events } = await run("next", history);
