@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { executeTool, ToolError, toolSchemas } from "./tools.ts";
+import { executeTool, ToolError, toolSchemas } from "../src/tools.ts";
 
 // Tools sleep to simulate API latency; fake timers keep the suite fast.
 beforeEach(() => {

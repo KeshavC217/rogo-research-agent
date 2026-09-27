@@ -10,24 +10,29 @@ vi.mock("@anthropic-ai/sdk", () => ({
 }));
 
 // Stub tool execution so the loop is tested in isolation from tool latency and data.
-vi.mock("./tools.ts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./tools.ts")>()),
+vi.mock("../src/tools.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/tools.ts")>()),
   executeTool: vi.fn(),
 }));
 
-import { runAgent, type AgentEvent } from "./agent.ts";
-import { executeTool, ToolError } from "./tools.ts";
+import { runAgent, type AgentEvent } from "../src/agent.ts";
+import { executeTool, ToolError } from "../src/tools.ts";
 
 const mockedExecuteTool = vi.mocked(executeTool);
 
 function textResponse(text: string): Partial<Anthropic.Message> {
-  return { content: [{ type: "text", text, citations: null }], stop_reason: "end_turn" };
+  return {
+    content: [{ type: "text", text, citations: null }],
+    stop_reason: "end_turn",
+    usage: { input_tokens: 100, output_tokens: 20 } as Anthropic.Usage,
+  };
 }
 
 function toolResponse(...calls: [id: string, name: string, input: object][]) {
   return {
     content: calls.map(([id, name, input]) => ({ type: "tool_use", id, name, input })),
     stop_reason: "tool_use",
+    usage: { input_tokens: 100, output_tokens: 10 },
   } as Partial<Anthropic.Message>;
 }
 
@@ -155,12 +160,36 @@ describe("runAgent", () => {
 
     const { events } = await run("Find Acme");
 
-    expect(events.map((e) => e.type)).toEqual(["iteration", "tool_start", "tool_end", "iteration"]);
+    expect(events.map((e) => e.type).filter((t) => t !== "model_call")).toEqual([
+      "iteration",
+      "tool_start",
+      "tool_end",
+      "iteration",
+    ]);
+  });
+
+  it("reports latency, tokens and stop reason for every model call", async () => {
+    mockedExecuteTool.mockResolvedValue([]);
+    scriptModel(toolResponse(["t1", "searchCompanies", { query: "acme" }]), textResponse("ok"));
+
+    const { events } = await run("Find Acme");
+
+    const modelCalls = events.filter((e) => e.type === "model_call");
+    // One event per model request, including any post-processing pass.
+    expect(modelCalls).toHaveLength(create.mock.calls.length);
+    expect(modelCalls[0]).toMatchObject({
+      purpose: "research",
+      model: expect.any(String),
+      ms: expect.any(Number),
+      inputTokens: 100,
+      outputTokens: 10,
+      stopReason: "tool_use",
+    });
   });
 
   it("reports an unknown tool name from the model as a failure", async () => {
     const { executeTool: realExecuteTool } =
-      await vi.importActual<typeof import("./tools.ts")>("./tools.ts");
+      await vi.importActual<typeof import("../src/tools.ts")>("../src/tools.ts");
     mockedExecuteTool.mockImplementation(realExecuteTool);
     scriptModel(toolResponse(["t1", "hallucinatedTool", {}]), textResponse("ok"));
 

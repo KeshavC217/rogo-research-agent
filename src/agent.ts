@@ -28,6 +28,15 @@ const EDITOR_PROMPT = `You are an editor. Rewrite the analyst's draft answer so 
 
 export type AgentEvent =
   | { type: "iteration"; n: number }
+  | {
+      type: "model_call";
+      purpose: "research" | "edit";
+      model: string;
+      ms: number;
+      inputTokens: number;
+      outputTokens: number;
+      stopReason: string | null;
+    }
   | { type: "tool_start"; name: string; input: unknown }
   | { type: "tool_end"; name: string; ms: number }
   | { type: "tool_failed"; name: string; message: string };
@@ -44,6 +53,26 @@ function textOf(message: Anthropic.Message): string {
     .join("\n");
 }
 
+/** Calls the model and reports its latency and token usage. */
+async function callModel(
+  purpose: "research" | "edit",
+  params: Omit<Anthropic.MessageCreateParamsNonStreaming, "model">,
+  onEvent: (event: AgentEvent) => void,
+): Promise<Anthropic.Message> {
+  const startedAt = Date.now();
+  const response = await client.messages.create({ model: MODEL, ...params });
+  onEvent({
+    type: "model_call",
+    purpose,
+    model: MODEL,
+    ms: Date.now() - startedAt,
+    inputTokens: response.usage.input_tokens,
+    outputTokens: response.usage.output_tokens,
+    stopReason: response.stop_reason,
+  });
+  return response;
+}
+
 export async function runAgent(
   question: string,
   onEvent: (event: AgentEvent) => void,
@@ -57,13 +86,11 @@ export async function runAgent(
     iterations++;
     onEvent({ type: "iteration", n: iterations });
 
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 16000,
-      system: SYSTEM_PROMPT,
-      tools: toolSchemas,
-      messages,
-    });
+    const response = await callModel(
+      "research",
+      { max_tokens: 16000, system: SYSTEM_PROMPT, tools: toolSchemas, messages },
+      onEvent,
+    );
 
     messages.push({ role: "assistant", content: response.content });
 
@@ -105,17 +132,20 @@ export async function runAgent(
   }
 
   // Polish the draft before showing it to the analyst.
-  const edited = await client.messages.create({
-    model: MODEL,
-    max_tokens: 16000,
-    system: EDITOR_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: `Research transcript:\n${JSON.stringify(messages)}\n\nDraft answer:\n${draft}\n\nRewrite the draft answer.`,
-      },
-    ],
-  });
+  const edited = await callModel(
+    "edit",
+    {
+      max_tokens: 16000,
+      system: EDITOR_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: `Research transcript:\n${JSON.stringify(messages)}\n\nDraft answer:\n${draft}\n\nRewrite the draft answer.`,
+        },
+      ],
+    },
+    onEvent,
+  );
 
   return { answer: textOf(edited), iterations };
 }
