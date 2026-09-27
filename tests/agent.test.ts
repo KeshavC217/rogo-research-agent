@@ -203,6 +203,7 @@ describe("runAgent", () => {
     expect(answer).toBe("I couldn't find financials for that name.");
     expect(events).toContainEqual({
       type: "tool_failed",
+      id: "t1",
       name: "getFinancials",
       message: 'no financials found for "Acme"',
     });
@@ -266,11 +267,12 @@ describe("runAgent", () => {
 
     expect(events).toContainEqual({
       type: "tool_start",
+      id: "t1",
       name: "searchCompanies",
       input: { query: "acme" },
     });
     const end = events.find((e) => e.type === "tool_end");
-    expect(end).toMatchObject({ name: "searchCompanies", ms: expect.any(Number) });
+    expect(end).toMatchObject({ id: "t1", name: "searchCompanies", ms: expect.any(Number) });
   });
 
   it("keeps the full conversation across iterations", async () => {

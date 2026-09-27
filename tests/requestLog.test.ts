@@ -13,7 +13,7 @@ describe("createRequestLog", () => {
 
     log.start("Compare Acme and Globex");
     log.onEvent({ type: "iteration", n: 1 });
-    log.onEvent({ type: "tool_start", name: "getFinancials", input: { company: "Acme Corp" } });
+    log.onEvent({ type: "tool_start", id: "t1", name: "getFinancials", input: { company: "Acme Corp" } });
     log.done();
 
     expect(lines).toHaveLength(4);
@@ -54,11 +54,11 @@ describe("createRequestLog", () => {
       cacheWriteTokens: 1500,
       outputTokens: 50,
     });
-    log.onEvent({ type: "tool_start", name: "a", input: {} });
-    log.onEvent({ type: "tool_end", name: "a", ms: 400 });
-    log.onEvent({ type: "tool_start", name: "b", input: {} });
-    log.onEvent({ type: "tool_failed", name: "b", message: "boom" });
-    log.onEvent({ type: "tool_end", name: "b", ms: 300 });
+    log.onEvent({ type: "tool_start", id: "a", name: "a", input: {} });
+    log.onEvent({ type: "tool_end", id: "a", name: "a", ms: 400 });
+    log.onEvent({ type: "tool_start", id: "b", name: "b", input: {} });
+    log.onEvent({ type: "tool_failed", id: "b", name: "b", message: "boom" });
+    log.onEvent({ type: "tool_end", id: "b", name: "b", ms: 300 });
     log.onEvent({ type: "iteration", n: 2 });
     log.onEvent({
       ...model,

@@ -1,10 +1,15 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
+import type { ChatStreamEvent } from "../protocol.ts";
+import { applyEvent, stepLabel, type Step } from "./steps.ts";
+import { readEvents } from "./stream.ts";
 
 interface Message {
   role: "user" | "assistant";
   text: string;
   /** Error replies are shown but never sent back to the agent as history. */
   error?: boolean;
+  /** Research steps the agent took for this reply, shown above it. */
+  steps?: Step[];
 }
 
 interface ChatTurn {
@@ -24,6 +29,64 @@ function toHistory(messages: Message[]): ChatTurn[] {
   return turns;
 }
 
+/**
+ * Posts the question and streams progress events to `onEvent` until the final
+ * answer (or an error) arrives. Always resolves to a message to show.
+ */
+async function ask(
+  question: string,
+  history: ChatTurn[],
+  onEvent: (event: ChatStreamEvent) => void,
+): Promise<Message> {
+  const failed = (text: string): Message => ({ role: "assistant", text, error: true });
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: question, history }),
+    });
+    if (!res.ok || !res.body) {
+      return failed(`Something went wrong: the server responded ${res.status}.`);
+    }
+
+    for await (const event of readEvents(res.body)) {
+      if (event.type === "answer") return { role: "assistant", text: event.answer };
+      if (event.type === "error") return failed(event.message);
+      onEvent(event);
+    }
+    return failed("Something went wrong: the connection closed before an answer arrived.");
+  } catch (err) {
+    return failed(`Something went wrong: ${String(err)}`);
+  }
+}
+
+const STATUS_ICON: Record<Step["status"], string> = { running: "⋯", done: "✓", failed: "✗" };
+
+/**
+ * The agent's research steps, shown above its reply. While `thinking`, a
+ * "Thinking…" line shows whenever no tool is running.
+ */
+function StepList({ steps, thinking = false }: { steps: Step[]; thinking?: boolean }) {
+  return (
+    <ul className="steps" aria-label="Research steps">
+      {steps.map((step) => (
+        <li key={step.id} className={`step ${step.status}`}>
+          <span className="icon">{STATUS_ICON[step.status]}</span>
+          {stepLabel(step)}
+          {step.error && <span className="step-error"> — {step.error}</span>}
+        </li>
+      ))}
+      {thinking && !steps.some((s) => s.status === "running") && (
+        <li className="step running">
+          <span className="icon">⋯</span>
+          Thinking…
+        </li>
+      )}
+    </ul>
+  );
+}
+
 const EXAMPLES = [
   "Compare Acme and Globex and tell me which one appears to be growing faster.",
   "What are the biggest risks Umbrella Health flags in its filings?",
@@ -35,6 +98,7 @@ export function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [steps, setSteps] = useState<Step[]>([]);
 
   async function send(question: string) {
     if (!question.trim() || busy) return;
@@ -44,25 +108,15 @@ export function App() {
     setInput("");
     setBusy(true);
 
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: question, history }),
-      });
-      const data = await res.json();
-      setMessages((prev) => [
-        ...prev,
-        res.ok && data.answer
-          ? { role: "assistant", text: data.answer }
-          : { role: "assistant", text: data.error ?? "No answer returned.", error: true },
-      ]);
-    } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: `Something went wrong: ${String(err)}`, error: true },
-      ]);
-    }
+    // Track steps locally too, so the finished list can be attached to the reply.
+    let current: Step[] = [];
+    setSteps(current);
+
+    const reply = await ask(question, history, (event) => {
+      current = applyEvent(current, event);
+      setSteps(current);
+    });
+    setMessages((prev) => [...prev, { ...reply, steps: current }]);
 
     setBusy(false);
   }
@@ -86,12 +140,13 @@ export function App() {
         )}
 
         {messages.map((message, i) => (
-          <div key={i} className={`bubble ${message.role}`}>
-            {message.text}
-          </div>
+          <Fragment key={i}>
+            {message.steps?.length ? <StepList steps={message.steps} /> : null}
+            <div className={`bubble ${message.role}`}>{message.text}</div>
+          </Fragment>
         ))}
 
-        {busy && <div className="bubble assistant pending">Thinking…</div>}
+        {busy && <StepList steps={steps} thinking />}
       </div>
 
       <form

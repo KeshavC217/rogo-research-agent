@@ -2,6 +2,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChatStreamEvent } from "../../src/protocol.ts";
 import { App } from "../../src/ui/App.tsx";
 
 const fetchMock = vi.fn();
@@ -15,8 +16,32 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function respondWith(body: object, status = 200) {
-  fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status }));
+const ndjson = (events: ChatStreamEvent[]) => events.map((e) => JSON.stringify(e) + "\n").join("");
+
+/** Responds with a complete NDJSON stream. `{answer}` / `{error}` become the final event. */
+function respondWith(body: { answer?: string; error?: string }, status = 200) {
+  const final: ChatStreamEvent =
+    body.answer !== undefined
+      ? { type: "answer", answer: body.answer }
+      : { type: "error", message: body.error ?? "" };
+  fetchMock.mockResolvedValue(new Response(ndjson([final]), { status }));
+}
+
+/** Responds with a stream the test pushes events into one at a time. */
+function respondWithLiveStream() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({ start: (c) => (controller = c) });
+  fetchMock.mockResolvedValue(new Response(body));
+  const encoder = new TextEncoder();
+  return {
+    push: (event: ChatStreamEvent) => controller.enqueue(encoder.encode(ndjson([event]))),
+    close: () => controller.close(),
+  };
+}
+
+async function ask(question: string) {
+  await userEvent.type(screen.getByPlaceholderText(/ask a research question/i), question);
+  await userEvent.click(screen.getByRole("button", { name: /send/i }));
 }
 
 describe("App", () => {
@@ -64,7 +89,7 @@ describe("App", () => {
 
   it("does not send failed turns as history", async () => {
     const input = () => screen.getByPlaceholderText(/ask a research question/i);
-    respondWith({ error: "model overloaded" }, 500);
+    respondWith({ error: "model overloaded" });
     render(<App />);
     await userEvent.type(input(), "How is Initech?");
     await userEvent.click(screen.getByRole("button", { name: /send/i }));
@@ -97,23 +122,145 @@ describe("App", () => {
   });
 
   it("shows a pending state while waiting and disables the composer", async () => {
-    let resolve!: (r: Response) => void;
-    fetchMock.mockReturnValue(new Promise<Response>((r) => (resolve = r)));
+    const stream = respondWithLiveStream();
     render(<App />);
 
-    await userEvent.type(screen.getByPlaceholderText(/ask a research question/i), "Acme?");
-    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+    await ask("Acme?");
 
-    expect(screen.getByText(/thinking/i)).toBeTruthy();
+    expect(await screen.findByText(/thinking/i)).toBeTruthy();
     expect((screen.getByRole("button", { name: /send/i }) as HTMLButtonElement).disabled).toBe(true);
 
-    resolve(new Response(JSON.stringify({ answer: "done" })));
+    stream.push({ type: "answer", answer: "done" });
+    stream.close();
     expect(await screen.findByText("done")).toBeTruthy();
     expect(screen.queryByText(/thinking/i)).toBeNull();
   });
 
+  it("shows each research step live as the agent works", async () => {
+    const stream = respondWithLiveStream();
+    render(<App />);
+    await ask("Umbrella risks?");
+
+    const input = { query: "risk factors", company: "Umbrella Health" };
+    stream.push({ type: "tool_start", id: "t1", name: "searchDocuments", input });
+    expect(
+      await screen.findByText('Searching documents: "risk factors" (Umbrella Health)…'),
+    ).toBeTruthy();
+
+    stream.push({ type: "tool_end", id: "t1", name: "searchDocuments", ms: 700 });
+    expect(
+      await screen.findByText('Searched documents: "risk factors" (Umbrella Health)'),
+    ).toBeTruthy();
+
+    stream.push({ type: "answer", answer: "Acquisitions are the main risk." });
+    stream.close();
+    expect(await screen.findByText("Acquisitions are the main risk.")).toBeTruthy();
+  });
+
+  it("keeps the steps above the answer, outside its bubble, once it arrives", async () => {
+    const stream = respondWithLiveStream();
+    render(<App />);
+    await ask("Umbrella risks?");
+
+    const input = { query: "risk factors", company: "Umbrella Health" };
+    stream.push({ type: "tool_start", id: "t1", name: "searchDocuments", input });
+    stream.push({ type: "tool_end", id: "t1", name: "searchDocuments", ms: 700 });
+    stream.push({ type: "answer", answer: "Acquisitions are the main risk." });
+    stream.close();
+
+    const answer = await screen.findByText("Acquisitions are the main risk.");
+    const step = screen.getByText('Searched documents: "risk factors" (Umbrella Health)');
+    expect(step.closest(".bubble")).toBeNull();
+    // The step list sits immediately before the answer bubble.
+    expect(answer.previousElementSibling?.contains(step)).toBe(true);
+    expect(screen.queryByText(/thinking/i)).toBeNull();
+  });
+
+  it("keeps each answer's steps separate across a conversation", async () => {
+    let stream = respondWithLiveStream();
+    render(<App />);
+    await ask("Initech?");
+    stream.push({ type: "tool_start", id: "a", name: "getFinancials", input: { company: "Initech" } });
+    stream.push({ type: "tool_end", id: "a", name: "getFinancials", ms: 1 });
+    stream.push({ type: "answer", answer: "first" });
+    stream.close();
+    await screen.findByText("first");
+
+    stream = respondWithLiveStream();
+    await ask("Acme?");
+    stream.push({ type: "tool_start", id: "b", name: "getFinancials", input: { company: "Acme Corp" } });
+    stream.push({ type: "tool_end", id: "b", name: "getFinancials", ms: 1 });
+    stream.push({ type: "answer", answer: "second" });
+    stream.close();
+    await screen.findByText("second");
+
+    const lists = screen.getAllByRole("list", { name: /research steps/i });
+    expect(lists.map((l) => l.textContent)).toEqual([
+      "✓Loaded financials (Initech)",
+      "✓Loaded financials (Acme Corp)",
+    ]);
+  });
+
+  it("shows no step list for answers that needed no research", async () => {
+    respondWith({ answer: "Which Acme do you mean?" });
+    render(<App />);
+    await ask("Compare Acme and Globex");
+
+    await screen.findByText("Which Acme do you mean?");
+    expect(screen.queryByRole("list", { name: /research steps/i })).toBeNull();
+  });
+
+  it("marks failed steps with the reason", async () => {
+    const stream = respondWithLiveStream();
+    render(<App />);
+    await ask("Acme revenue?");
+
+    stream.push({ type: "tool_start", id: "t1", name: "getFinancials", input: { company: "Acme" } });
+    stream.push({ type: "tool_failed", id: "t1", name: "getFinancials", message: "no financials found" });
+    stream.push({ type: "tool_end", id: "t1", name: "getFinancials", ms: 800 });
+
+    expect(await screen.findByText(/no financials found/)).toBeTruthy();
+    const step = screen.getByText(/no financials found/).closest("li")!;
+    expect(step.className).toContain("failed");
+    expect(step.textContent).toContain("Loading financials (Acme)");
+    expect(step.textContent).not.toContain("Loaded");
+    stream.close();
+  });
+
+  it("tracks parallel calls to the same tool separately", async () => {
+    const stream = respondWithLiveStream();
+    render(<App />);
+    await ask("Compare");
+
+    stream.push({ type: "tool_start", id: "a", name: "getFinancials", input: { company: "Acme Corp" } });
+    stream.push({ type: "tool_start", id: "b", name: "getFinancials", input: { company: "Globex Inc" } });
+    stream.push({ type: "tool_end", id: "b", name: "getFinancials", ms: 800 });
+
+    expect(await screen.findByText("Loaded financials (Globex Inc)")).toBeTruthy();
+    expect(screen.getByText("Loading financials (Acme Corp)…")).toBeTruthy();
+    stream.close();
+  });
+
+  it("reports a stream that ends without an answer", async () => {
+    const stream = respondWithLiveStream();
+    render(<App />);
+    await ask("Acme?");
+
+    stream.close();
+
+    expect(await screen.findByText(/closed before an answer/i)).toBeTruthy();
+  });
+
+  it("reports a non-streaming HTTP failure", async () => {
+    fetchMock.mockResolvedValue(new Response("Bad Gateway", { status: 502 }));
+    render(<App />);
+    await ask("Acme?");
+
+    expect(await screen.findByText(/responded 502/)).toBeTruthy();
+  });
+
   it("shows server errors instead of an empty bubble", async () => {
-    respondWith({ error: "model overloaded" }, 500);
+    respondWith({ error: "model overloaded" });
     render(<App />);
 
     await userEvent.type(screen.getByPlaceholderText(/ask a research question/i), "Acme?");

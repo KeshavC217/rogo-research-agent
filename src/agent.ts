@@ -56,9 +56,10 @@ export type AgentEvent =
       outputTokens: number;
       stopReason: string | null;
     }
-  | { type: "tool_start"; name: string; input: unknown }
-  | { type: "tool_end"; name: string; ms: number }
-  | { type: "tool_failed"; name: string; message: string };
+  // `id` is the model's tool_use id, so parallel calls to the same tool can be told apart.
+  | { type: "tool_start"; id: string; name: string; input: unknown }
+  | { type: "tool_end"; id: string; name: string; ms: number }
+  | { type: "tool_failed"; id: string; name: string; message: string };
 
 export interface AgentResult {
   answer: string;
@@ -136,7 +137,7 @@ async function runTool(
   onEvent: (event: AgentEvent) => void,
 ): Promise<Anthropic.ToolResultBlockParam> {
   const startedAt = Date.now();
-  onEvent({ type: "tool_start", name: use.name, input: use.input });
+  onEvent({ type: "tool_start", id: use.id, name: use.name, input: use.input });
 
   let content: string;
   try {
@@ -145,10 +146,10 @@ async function runTool(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     content = `${use.name} returned: ${message}`;
-    onEvent({ type: "tool_failed", name: use.name, message });
+    onEvent({ type: "tool_failed", id: use.id, name: use.name, message });
   }
 
-  onEvent({ type: "tool_end", name: use.name, ms: Date.now() - startedAt });
+  onEvent({ type: "tool_end", id: use.id, name: use.name, ms: Date.now() - startedAt });
   return { type: "tool_result", tool_use_id: use.id, content };
 }
 
