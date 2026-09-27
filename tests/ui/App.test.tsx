@@ -141,6 +141,38 @@ describe("App", () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).effort).toBe("high");
   });
 
+  it("renders answers as markdown, including tables", async () => {
+    respondWith({
+      answer: "**Initech** grew fastest.\n\n- one\n- two\n\n| Co | Growth |\n|---|---|\n| ITCH | 14.8% |",
+    });
+    render(<App />);
+    await ask("Who grew fastest?");
+
+    const bold = await screen.findByText("Initech");
+    expect(bold.tagName).toBe("STRONG");
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toContain("one");
+    expect(screen.getByRole("table")).toBeTruthy();
+    expect(screen.getByRole("cell", { name: "14.8%" })).toBeTruthy();
+    expect(screen.queryByText(/\*\*/)).toBeNull();
+  });
+
+  it("does not render raw HTML from an answer", async () => {
+    respondWith({ answer: 'Hi <img src="x" onerror="alert(1)"> there' });
+    const { container } = render(<App />);
+    await ask("Hi?");
+
+    await screen.findByText(/there/);
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("shows the user's own question as plain text, not markdown", async () => {
+    respondWith({ answer: "ok" });
+    render(<App />);
+    await ask("what does **bold** mean");
+
+    expect(await screen.findByText("what does **bold** mean")).toBeTruthy();
+  });
+
   it("does not send an empty question", async () => {
     render(<App />);
 
@@ -200,7 +232,7 @@ describe("App", () => {
     const step = screen.getByText('Searched documents: "risk factors" (Umbrella Health)');
     expect(step.closest(".bubble")).toBeNull();
     // The step list sits immediately before the answer bubble.
-    expect(answer.previousElementSibling?.contains(step)).toBe(true);
+    expect(answer.closest(".bubble")?.previousElementSibling?.contains(step)).toBe(true);
     expect(screen.queryByText(/thinking/i)).toBeNull();
   });
 

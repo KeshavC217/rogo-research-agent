@@ -1,4 +1,6 @@
 import { Fragment, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { DEFAULT_EFFORT, EFFORTS, isEffort, type Effort } from "../models.ts";
 import type { ChatStreamEvent } from "../protocol.ts";
 import { applyEvent, stepLabel, type Step } from "./steps.ts";
@@ -145,7 +147,14 @@ export function App() {
         {messages.map((message, i) => (
           <Fragment key={i}>
             {message.steps?.length ? <StepList steps={message.steps} /> : null}
-            <div className={`bubble ${message.role}`}>{message.text}</div>
+            {message.role === "assistant" && !message.error ? (
+              // Answers are markdown (tables, lists, bold). Raw HTML is not rendered.
+              <div className="bubble assistant markdown">
+                <Markdown remarkPlugins={[remarkGfm]}>{message.text}</Markdown>
+              </div>
+            ) : (
+              <div className={`bubble ${message.role}`}>{message.text}</div>
+            )}
           </Fragment>
         ))}
 
