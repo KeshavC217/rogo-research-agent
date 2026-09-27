@@ -67,8 +67,34 @@ describe("POST /api/chat", () => {
       history: [{ question: "q1", answer: "a1" }, { question: "q2" }, "junk", null],
     });
 
-    expect(mockedRunAgent).toHaveBeenCalledWith("And margins?", expect.any(Function), [
-      { question: "q1", answer: "a1" },
-    ]);
+    expect(mockedRunAgent).toHaveBeenCalledWith(
+      "And margins?",
+      expect.any(Function),
+      [{ question: "q1", answer: "a1" }],
+      undefined,
+    );
   });
+
+  it.each([
+    ["low", "claude-haiku-4-5"],
+    ["medium", "claude-sonnet-5"],
+    ["high", "claude-opus-5"],
+  ])("runs %s effort on %s", async (effort, model) => {
+    mockedRunAgent.mockResolvedValue({ answer: "ok", iterations: 1 });
+
+    await chat({ message: "hi", effort });
+
+    expect(mockedRunAgent.mock.calls[0][3]).toBe(model);
+  });
+
+  it.each([["max"], ["claude-opus-5"], [42], [undefined]])(
+    "ignores an unrecognised effort (%s) and uses the agent default",
+    async (effort) => {
+      mockedRunAgent.mockResolvedValue({ answer: "ok", iterations: 1 });
+
+      await chat({ message: "hi", effort });
+
+      expect(mockedRunAgent.mock.calls[0][3]).toBeUndefined();
+    },
+  );
 });

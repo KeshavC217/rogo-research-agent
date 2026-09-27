@@ -9,3 +9,4 @@
 - Added prompt caching: an explicit breakpoint on the system prompt (tools + system, stable across every request) plus automatic caching of the growing conversation, with cache read/write tokens logged per model call.
 - The system prompt now tells the agent to ask one short clarifying question (before researching) when a question is ambiguous or not inferable from the data, and only to make a stated assumption if its clarification goes unresolved, with eval cases covering both steps.
 - `/api/chat` now streams the agent's progress events as NDJSON and ends with an `answer` or `error` event, and the UI renders them as a live step list (running, done, or failed with the reason) that stays above each answer instead of a static "Thinking…".
+- Added an effort dropdown next to Send (Low = Haiku 4.5, Medium = Sonnet 5, High = Opus 5); the client sends only the effort level and the server maps it to a model id, and a model refusal now returns a plain "can't help" answer.

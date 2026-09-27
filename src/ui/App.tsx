@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react";
+import { DEFAULT_EFFORT, EFFORTS, isEffort, type Effort } from "../models.ts";
 import type { ChatStreamEvent } from "../protocol.ts";
 import { applyEvent, stepLabel, type Step } from "./steps.ts";
 import { readEvents } from "./stream.ts";
@@ -36,6 +37,7 @@ function toHistory(messages: Message[]): ChatTurn[] {
 async function ask(
   question: string,
   history: ChatTurn[],
+  effort: Effort,
   onEvent: (event: ChatStreamEvent) => void,
 ): Promise<Message> {
   const failed = (text: string): Message => ({ role: "assistant", text, error: true });
@@ -44,7 +46,7 @@ async function ask(
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: question, history }),
+      body: JSON.stringify({ message: question, history, effort }),
     });
     if (!res.ok || !res.body) {
       return failed(`Something went wrong: the server responded ${res.status}.`);
@@ -99,6 +101,7 @@ export function App() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState<Step[]>([]);
+  const [effort, setEffort] = useState<Effort>(DEFAULT_EFFORT);
 
   async function send(question: string) {
     if (!question.trim() || busy) return;
@@ -112,7 +115,7 @@ export function App() {
     let current: Step[] = [];
     setSteps(current);
 
-    const reply = await ask(question, history, (event) => {
+    const reply = await ask(question, history, effort, (event) => {
       current = applyEvent(current, event);
       setSteps(current);
     });
@@ -162,6 +165,19 @@ export function App() {
           placeholder="Ask a research question…"
           disabled={busy}
         />
+        <select
+          aria-label="Effort"
+          title="Effort: which model answers"
+          value={effort}
+          onChange={(e) => isEffort(e.target.value) && setEffort(e.target.value)}
+          disabled={busy}
+        >
+          {Object.entries(EFFORTS).map(([value, { label, modelName }]) => (
+            <option key={value} value={value}>
+              {label} · {modelName}
+            </option>
+          ))}
+        </select>
         <button type="submit" disabled={busy}>
           Send
         </button>

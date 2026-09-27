@@ -64,7 +64,11 @@ describe("App", () => {
     expect(screen.getByText("Acme growth?")).toBeTruthy();
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/chat");
-    expect(JSON.parse(init.body)).toEqual({ message: "Acme growth?", history: [] });
+    expect(JSON.parse(init.body)).toEqual({
+      message: "Acme growth?",
+      history: [],
+      effort: "medium",
+    });
   });
 
   it("sends earlier questions and answers as history on follow-ups", async () => {
@@ -84,6 +88,7 @@ describe("App", () => {
     expect(body).toEqual({
       message: "And margins?",
       history: [{ question: "How is Initech?", answer: "Initech grew 14.8%." }],
+      effort: "medium",
     });
   });
 
@@ -111,6 +116,29 @@ describe("App", () => {
 
     expect(await screen.findByText("Initech is doing fine.")).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers low/medium/high effort, defaulting to medium", () => {
+    render(<App />);
+
+    const select = screen.getByRole("combobox", { name: /effort/i }) as HTMLSelectElement;
+    expect(select.value).toBe("medium");
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+      "Low · Haiku 4.5",
+      "Medium · Sonnet 5",
+      "High · Opus 5",
+    ]);
+  });
+
+  it("sends the selected effort with the question", async () => {
+    respondWith({ answer: "ok" });
+    render(<App />);
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /effort/i }), "high");
+    await ask("Acme?");
+    await screen.findByText("ok");
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).effort).toBe("high");
   });
 
   it("does not send an empty question", async () => {

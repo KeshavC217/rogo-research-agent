@@ -67,9 +67,9 @@ function scriptModel(...responses: Partial<Anthropic.Message>[]) {
 /** Every model request, as it was sent. */
 let sent: Anthropic.MessageCreateParams[] = [];
 
-async function run(question: string, history?: ChatTurn[]) {
+async function run(question: string, history?: ChatTurn[], model?: string) {
   const events: AgentEvent[] = [];
-  const result = await runAgent(question, (e) => events.push(e), history);
+  const result = await runAgent(question, (e) => events.push(e), history, model);
   return { ...result, events };
 }
 
@@ -308,6 +308,34 @@ describe("runAgent", () => {
     expect(sent).toHaveLength(iterations);
     expect(answer).toMatch(/ran out of research steps/i);
     expect(create).toHaveBeenCalledTimes(iterations);
+  });
+
+  it("uses the requested model for every call and reports it", async () => {
+    mockedExecuteTool.mockResolvedValue([]);
+    scriptModel(toolResponse(["t1", "searchCompanies", { query: "a" }]), textResponse("ok"));
+
+    const { events } = await run("anything", [], "claude-opus-5");
+
+    expect(sent.map((p) => p.model)).toEqual(["claude-opus-5", "claude-opus-5"]);
+    const models = events.flatMap((e) => (e.type === "model_call" ? [e.model] : []));
+    expect(models).toEqual(["claude-opus-5", "claude-opus-5"]);
+  });
+
+  it("uses the default model when none is given", async () => {
+    scriptModel(textResponse("ok"));
+
+    await run("anything");
+
+    expect(sent[0].model).toBe(process.env.ROGO_MODEL ?? "claude-sonnet-5");
+  });
+
+  it("answers plainly when the model declines the request", async () => {
+    scriptModel({ content: [], stop_reason: "refusal", usage: textResponse("").usage });
+
+    const { answer } = await run("anything");
+
+    expect(answer).toMatch(/can't help/i);
+    expect(answer).not.toMatch(/ran out of research steps/i);
   });
 
   it("propagates model API errors", async () => {

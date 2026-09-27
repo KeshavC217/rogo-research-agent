@@ -6,7 +6,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { companies } from "./data.ts";
 import { executeTool, toolSchemas } from "./tools.ts";
 
-const MODEL = process.env.ROGO_MODEL ?? "claude-sonnet-5";
+/** Model used when the caller doesn't choose one (e.g. the eval suite). */
+const DEFAULT_MODEL = process.env.ROGO_MODEL ?? "claude-sonnet-5";
 const MAX_ITERATIONS = 12;
 
 /** Budget for prior chat turns sent with each question. Oldest turns drop first. */
@@ -107,12 +108,11 @@ const SYSTEM: Anthropic.TextBlockParam[] = [
 
 /** Calls the model and reports its latency and token usage. */
 async function callModel(
-  params: Omit<Anthropic.MessageCreateParamsNonStreaming, "model">,
+  params: Anthropic.MessageCreateParamsNonStreaming,
   onEvent: (event: AgentEvent) => void,
 ): Promise<Anthropic.Message> {
   const startedAt = Date.now();
   const response = await client.messages.create({
-    model: MODEL,
     // Automatic caching: moves a breakpoint to the end of the conversation on
     // each call, so tool-loop iterations and follow-up questions reuse the prefix.
     cache_control: { type: "ephemeral" },
@@ -120,7 +120,7 @@ async function callModel(
   });
   onEvent({
     type: "model_call",
-    model: MODEL,
+    model: params.model,
     ms: Date.now() - startedAt,
     inputTokens: response.usage.input_tokens,
     cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
@@ -157,6 +157,7 @@ export async function runAgent(
   question: string,
   onEvent: (event: AgentEvent) => void,
   history: ChatTurn[] = [],
+  model: string = DEFAULT_MODEL,
 ): Promise<AgentResult> {
   const { turns, estimatedTokens } = windowHistory(history);
   onEvent({
@@ -182,7 +183,7 @@ export async function runAgent(
     onEvent({ type: "iteration", n: iterations });
 
     const response = await callModel(
-      { max_tokens: 16000, system: SYSTEM, tools: toolSchemas, messages },
+      { model, max_tokens: 16000, system: SYSTEM, tools: toolSchemas, messages },
       onEvent,
     );
 
@@ -191,6 +192,13 @@ export async function runAgent(
     const toolUses = response.content.filter(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
     );
+
+    // Newer models can decline a request via safety classifiers; say so plainly
+    // rather than falling through to the "ran out of steps" message.
+    if (response.stop_reason === "refusal") {
+      answer = "I can't help with that request.";
+      break;
+    }
 
     if (toolUses.length === 0) {
       answer = textOf(response);

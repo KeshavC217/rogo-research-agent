@@ -145,6 +145,16 @@ header p {
   background: #fff;
 }
 
+.composer select {
+  padding: 0 10px;
+  border: 1px solid #dde2e8;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #3b4652;
+  background: #fff;
+  cursor: pointer;
+}
+
 .composer button {
   padding: 12px 20px;
   border: none;
@@ -156,7 +166,8 @@ header p {
 }
 
 .composer button:disabled,
-.composer input:disabled {
+.composer input:disabled,
+.composer select:disabled {
   opacity: 0.55;
   cursor: default;
 }

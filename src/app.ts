@@ -1,5 +1,6 @@
 import express from "express";
 import { runAgent, type ChatTurn } from "./agent.ts";
+import { EFFORTS, isEffort } from "./models.ts";
 import type { ChatStreamEvent } from "./protocol.ts";
 import { createRequestLog } from "./requestLog.ts";
 
@@ -21,6 +22,9 @@ export function createApp() {
   app.post("/api/chat", async (req, res) => {
     const message = String(req.body.message ?? "");
     const history = parseHistory(req.body.history);
+    // Unknown or missing effort falls back to the agent's default model.
+    const effort: unknown = req.body.effort;
+    const model = isEffort(effort) ? EFFORTS[effort].model : undefined;
     const log = createRequestLog();
     log.start(message);
 
@@ -38,6 +42,7 @@ export function createApp() {
           send(event);
         },
         history,
+        model,
       );
       log.done();
       send({ type: "answer", answer: result.answer });
