@@ -20,12 +20,11 @@ describe("createRequestLog", () => {
     expect(lines.every((l) => l.startsWith("[req123] "))).toBe(true);
   });
 
-  it("logs model calls with purpose, latency, tokens and stop reason", () => {
+  it("logs model calls with model, latency, tokens and stop reason", () => {
     const { log, lines } = capture();
 
     log.onEvent({
       type: "model_call",
-      purpose: "edit",
       model: "claude-sonnet-5",
       ms: 1234,
       inputTokens: 5000,
@@ -33,14 +32,13 @@ describe("createRequestLog", () => {
       stopReason: "end_turn",
     });
 
-    expect(lines[0]).toContain("edit claude-sonnet-5 (1234ms) in=5000 out=300 stop=end_turn");
+    expect(lines[0]).toContain("claude-sonnet-5 (1234ms) in=5000 out=300 stop=end_turn");
   });
 
   it("totals model, token and tool usage across the request", () => {
     const { log, lines } = capture();
     const model = {
       type: "model_call" as const,
-      purpose: "research" as const,
       model: "m",
       stopReason: "tool_use",
     };
@@ -79,7 +77,6 @@ describe("createRequestLog", () => {
 
     log.onEvent({
       type: "model_call",
-      purpose: "research",
       model: "m",
       ms: 10,
       inputTokens: 1,

@@ -15,6 +15,11 @@ const SYSTEM_PROMPT = `You are Rogo Research, an assistant that answers question
 
 Use the tools to look up companies, profiles, financials and source documents. Answer the analyst's question.
 
+When you have what you need, write your final answer. It is shown to the analyst exactly as you write it, with no further editing, so:
+- Lead with the direct answer, then the supporting figures.
+- Keep it brief, clear and easy to follow; conversational rather than a formal report.
+- Don't narrate your research process or mention tools.
+
 Our coverage universe:
 ${companies
   .map(
@@ -24,13 +29,10 @@ ${companies
   .join("\n")}
 `;
 
-const EDITOR_PROMPT = `You are an editor. Rewrite the analyst's draft answer so that it reads clearly and is easy to follow. Keep it brief and conversational. Return only the rewritten answer.`;
-
 export type AgentEvent =
   | { type: "iteration"; n: number }
   | {
       type: "model_call";
-      purpose: "research" | "edit";
       model: string;
       ms: number;
       inputTokens: number;
@@ -55,7 +57,6 @@ function textOf(message: Anthropic.Message): string {
 
 /** Calls the model and reports its latency and token usage. */
 async function callModel(
-  purpose: "research" | "edit",
   params: Omit<Anthropic.MessageCreateParamsNonStreaming, "model">,
   onEvent: (event: AgentEvent) => void,
 ): Promise<Anthropic.Message> {
@@ -63,7 +64,6 @@ async function callModel(
   const response = await client.messages.create({ model: MODEL, ...params });
   onEvent({
     type: "model_call",
-    purpose,
     model: MODEL,
     ms: Date.now() - startedAt,
     inputTokens: response.usage.input_tokens,
@@ -79,7 +79,7 @@ export async function runAgent(
 ): Promise<AgentResult> {
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: question }];
 
-  let draft = "";
+  let answer = "";
   let iterations = 0;
 
   while (iterations < MAX_ITERATIONS) {
@@ -87,7 +87,6 @@ export async function runAgent(
     onEvent({ type: "iteration", n: iterations });
 
     const response = await callModel(
-      "research",
       { max_tokens: 16000, system: SYSTEM_PROMPT, tools: toolSchemas, messages },
       onEvent,
     );
@@ -99,7 +98,7 @@ export async function runAgent(
     );
 
     if (toolUses.length === 0) {
-      draft = textOf(response);
+      answer = textOf(response);
       break;
     }
 
@@ -126,26 +125,10 @@ export async function runAgent(
     messages.push({ role: "user", content: toolResults });
   }
 
-  if (!draft) {
-    draft =
+  if (!answer) {
+    answer =
       "I looked at a number of sources but ran out of research steps before I could pull the answer together. Try asking a narrower question.";
   }
 
-  // Polish the draft before showing it to the analyst.
-  const edited = await callModel(
-    "edit",
-    {
-      max_tokens: 16000,
-      system: EDITOR_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: `Research transcript:\n${JSON.stringify(messages)}\n\nDraft answer:\n${draft}\n\nRewrite the draft answer.`,
-        },
-      ],
-    },
-    onEvent,
-  );
-
-  return { answer: textOf(edited), iterations };
+  return { answer, iterations };
 }

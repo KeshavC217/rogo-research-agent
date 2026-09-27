@@ -36,33 +36,20 @@ function toolResponse(...calls: [id: string, name: string, input: object][]) {
   } as Partial<Anthropic.Message>;
 }
 
-/**
- * Queue the research-loop responses. Calls made without tools (e.g. a
- * post-processing pass) echo the draft back, so these tests don't depend on
- * whether that pass exists.
- */
+/** Queue the responses the model returns, one per call. */
 function scriptModel(...responses: Partial<Anthropic.Message>[]) {
   const queue = [...responses];
   create.mockImplementation(async (params: Anthropic.MessageCreateParams) => {
     // The agent mutates its messages array after each call, so snapshot it now.
     sent.push(structuredClone(params));
-    if (!params.tools) {
-      const prompt = String(params.messages.at(-1)?.content ?? "");
-      const draft = prompt.match(/Draft answer:\n([\s\S]*?)\n\nRewrite/)?.[1] ?? prompt;
-      return textResponse(draft);
-    }
     const next = queue.shift();
     if (!next) throw new Error("model called more times than scripted");
     return next;
   });
 }
 
+/** Every model request, as it was sent. */
 let sent: Anthropic.MessageCreateParams[] = [];
-
-/** The research-loop calls only (those offering tools), as they were sent. */
-function loopCalls(): Anthropic.MessageCreateParams[] {
-  return sent.filter((p) => p.tools);
-}
 
 async function run(question: string) {
   const events: AgentEvent[] = [];
@@ -85,6 +72,8 @@ describe("runAgent", () => {
     expect(answer).toBe("Acme is an industrial automation company.");
     expect(iterations).toBe(1);
     expect(mockedExecuteTool).not.toHaveBeenCalled();
+    // The model's final turn is the answer: no separate rewrite/editor call.
+    expect(create).toHaveBeenCalledTimes(1);
   });
 
   it("sends the question as the first user message and offers the tools", async () => {
@@ -92,10 +81,11 @@ describe("runAgent", () => {
 
     await run("What does Acme do?");
 
-    const [first] = loopCalls();
+    const [first] = sent;
     expect(first.messages[0]).toEqual({ role: "user", content: "What does Acme do?" });
     expect(first.tools?.length).toBeGreaterThan(0);
     expect(first.system).toContain("Acme Corp");
+    expect(first.system).toMatch(/final answer/i);
   });
 
   it("runs requested tools and feeds results back to the model", async () => {
@@ -111,7 +101,7 @@ describe("runAgent", () => {
     expect(iterations).toBe(2);
     expect(mockedExecuteTool).toHaveBeenCalledWith("getFinancials", { company: "Acme Corp" });
 
-    const second = loopCalls()[1];
+    const second = sent[1];
     const toolResults = second.messages.at(-1)!.content as Anthropic.ToolResultBlockParam[];
     expect(toolResults).toEqual([
       { type: "tool_result", tool_use_id: "t1", content: JSON.stringify({ revenue: 2260 }) },
@@ -130,7 +120,7 @@ describe("runAgent", () => {
 
     await run("Compare Acme and Globex");
 
-    const toolResults = loopCalls()[1].messages.at(-1)!.content as Anthropic.ToolResultBlockParam[];
+    const toolResults = sent[1].messages.at(-1)!.content as Anthropic.ToolResultBlockParam[];
     expect(toolResults.map((r) => r.tool_use_id)).toEqual(["a", "b"]);
     expect(mockedExecuteTool).toHaveBeenCalledTimes(2);
   });
@@ -150,7 +140,7 @@ describe("runAgent", () => {
       name: "getFinancials",
       message: 'no financials found for "Acme"',
     });
-    const [result] = loopCalls()[1].messages.at(-1)!.content as Anthropic.ToolResultBlockParam[];
+    const [result] = sent[1].messages.at(-1)!.content as Anthropic.ToolResultBlockParam[];
     expect(String(result.content)).toContain("no financials found");
   });
 
@@ -175,10 +165,8 @@ describe("runAgent", () => {
     const { events } = await run("Find Acme");
 
     const modelCalls = events.filter((e) => e.type === "model_call");
-    // One event per model request, including any post-processing pass.
     expect(modelCalls).toHaveLength(create.mock.calls.length);
     expect(modelCalls[0]).toMatchObject({
-      purpose: "research",
       model: expect.any(String),
       ms: expect.any(Number),
       inputTokens: 100,
@@ -226,7 +214,7 @@ describe("runAgent", () => {
     await run("Find Acme and Globex");
 
     // question, (assistant tool_use, user tool_result) x2
-    expect(loopCalls()[2].messages.map((m) => m.role)).toEqual([
+    expect(sent[2].messages.map((m) => m.role)).toEqual([
       "user",
       "assistant",
       "user",
@@ -245,8 +233,9 @@ describe("runAgent", () => {
     const { answer, iterations } = await run("Find Acme");
 
     expect(iterations).toBeLessThan(50);
-    expect(loopCalls()).toHaveLength(iterations);
+    expect(sent).toHaveLength(iterations);
     expect(answer).toMatch(/ran out of research steps/i);
+    expect(create).toHaveBeenCalledTimes(iterations);
   });
 
   it("propagates model API errors", async () => {

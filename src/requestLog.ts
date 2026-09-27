@@ -49,7 +49,7 @@ export function createRequestLog(
         stats.outputTokens += event.outputTokens;
         log(
           "model",
-          `${event.purpose} ${event.model} (${event.ms}ms) ` +
+          `${event.model} (${event.ms}ms) ` +
             `in=${event.inputTokens} out=${event.outputTokens} stop=${event.stopReason}`,
         );
         break;
