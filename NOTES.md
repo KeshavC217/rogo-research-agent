@@ -4,3 +4,4 @@
 - Added server-side observability: every model call logs latency, tokens and stop reason, every log line carries a per-request id, and each request ends with a one-line summary of time, calls and tokens.
 - Removed the separate editor pass (an extra model call that re-sent the whole transcript) and moved its style guidance into the system prompt, so the model's final turn is the answer.
 - Tool calls requested in the same model turn now run concurrently (results still returned in request order), so a turn waits for its slowest tool instead of the sum of all of them.
+- Added an LLM-judged eval suite (`npm run eval`, in `evals/`) that runs the agent on six questions and has Claude Opus 5 score each answer for answering the question, accuracy against the full dataset, and conciseness, alongside latency, tool calls and tokens.
