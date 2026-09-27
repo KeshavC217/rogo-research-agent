@@ -17,6 +17,7 @@ vi.mock("../src/tools.ts", async (importOriginal) => ({
 
 import {
   estimateTokens,
+  MAX_ITERATIONS,
   runAgent,
   windowHistory,
   type AgentEvent,
@@ -295,19 +296,68 @@ describe("runAgent", () => {
     ]);
   });
 
-  it("stops after the iteration limit and returns a fallback answer", async () => {
-    mockedExecuteTool.mockResolvedValue([]);
-    const loopForever = Array.from({ length: 50 }, (_, i) =>
-      toolResponse([`t${i}`, "searchCompanies", { query: "acme" }]),
-    );
-    scriptModel(...loopForever);
+  describe("at the iteration limit", () => {
+    /** A model that keeps asking for tools until told it can't. */
+    function modelThatNeverStops(finalText = "Partial answer: Acme Corp revenue was $2,260M.") {
+      mockedExecuteTool.mockResolvedValue([]);
+      let n = 0;
+      create.mockImplementation(async (params: Anthropic.MessageCreateParams) => {
+        sent.push(structuredClone(params));
+        if (params.tool_choice?.type === "none") return textResponse(finalText);
+        n++;
+        return toolResponse([`t${n}`, "searchCompanies", { query: "acme" }]);
+      });
+    }
 
-    const { answer, iterations } = await run("Find Acme");
+    it("forces a final answer instead of ending on unseen tool results", async () => {
+      modelThatNeverStops();
 
-    expect(iterations).toBeLessThan(50);
-    expect(sent).toHaveLength(iterations);
-    expect(answer).toMatch(/ran out of research steps/i);
-    expect(create).toHaveBeenCalledTimes(iterations);
+      const { answer, iterations } = await run("Find Acme");
+
+      expect(iterations).toBe(MAX_ITERATIONS);
+      expect(sent).toHaveLength(MAX_ITERATIONS);
+      expect(answer).toBe("Partial answer: Acme Corp revenue was $2,260M.");
+    });
+
+    it("only disables tools on the last call, and keeps them in the request for caching", async () => {
+      modelThatNeverStops();
+
+      await run("Find Acme");
+
+      expect(sent.map((p) => p.tool_choice?.type)).toEqual([
+        ...Array(MAX_ITERATIONS - 1).fill(undefined),
+        "none",
+      ]);
+      expect(sent.at(-1)!.tools).toEqual(sent[0].tools);
+    });
+
+    it("shows the model the last tool results alongside the instruction to answer", async () => {
+      modelThatNeverStops();
+
+      await run("Find Acme");
+
+      const last = sent.at(-1)!.messages.at(-1)!;
+      const blocks = last.content as Anthropic.ContentBlockParam[];
+      expect(last.role).toBe("user");
+      expect(blocks[0]).toMatchObject({ type: "tool_result", tool_use_id: `t${MAX_ITERATIONS - 1}` });
+      expect(blocks.at(-1)).toMatchObject({ type: "text", text: expect.stringMatching(/answer now/i) });
+    });
+
+    it("runs no tools on the final call", async () => {
+      modelThatNeverStops();
+
+      await run("Find Acme");
+
+      expect(mockedExecuteTool).toHaveBeenCalledTimes(MAX_ITERATIONS - 1);
+    });
+
+    it("falls back to a message if the forced answer is empty", async () => {
+      modelThatNeverStops("");
+
+      const { answer } = await run("Find Acme");
+
+      expect(answer).toMatch(/couldn't pull an answer together/i);
+    });
   });
 
   it("uses the requested model for every call and reports it", async () => {
@@ -335,7 +385,7 @@ describe("runAgent", () => {
     const { answer } = await run("anything");
 
     expect(answer).toMatch(/can't help/i);
-    expect(answer).not.toMatch(/ran out of research steps/i);
+    expect(answer).not.toMatch(/couldn't pull an answer together/i);
   });
 
   it("propagates model API errors", async () => {

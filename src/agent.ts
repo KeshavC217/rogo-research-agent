@@ -8,7 +8,12 @@ import { executeTool, toolSchemas } from "./tools.ts";
 
 /** Model used when the caller doesn't choose one (e.g. the eval suite). */
 const DEFAULT_MODEL = process.env.ROGO_MODEL ?? "claude-sonnet-5";
-const MAX_ITERATIONS = 12;
+/** Model calls per question. The last one must answer rather than call tools. */
+export const MAX_ITERATIONS = 12;
+
+const FINAL_ITERATION_NOTE =
+  "You've reached the research step limit, so you can't call any more tools. " +
+  "Answer now from what you've gathered, and say briefly what you couldn't check.";
 
 /** Budget for prior chat turns sent with each question. Oldest turns drop first. */
 export const HISTORY_TOKEN_BUDGET = 100_000;
@@ -182,8 +187,26 @@ export async function runAgent(
     iterations++;
     onEvent({ type: "iteration", n: iterations });
 
+    // On the last iteration, forbid tool calls so the model writes an answer from
+    // the results it already has, instead of requesting tools it will never see.
+    // Tools stay in the request (they lead the cached prefix); tool_choice does the work.
+    const isFinal = iterations === MAX_ITERATIONS;
+    if (isFinal) {
+      const last = messages.at(-1)!;
+      if (Array.isArray(last.content)) {
+        last.content.push({ type: "text", text: FINAL_ITERATION_NOTE });
+      }
+    }
+
     const response = await callModel(
-      { model, max_tokens: 16000, system: SYSTEM, tools: toolSchemas, messages },
+      {
+        model,
+        max_tokens: 16000,
+        system: SYSTEM,
+        tools: toolSchemas,
+        ...(isFinal && { tool_choice: { type: "none" } }),
+        messages,
+      },
       onEvent,
     );
 
@@ -212,9 +235,10 @@ export async function runAgent(
     messages.push({ role: "user", content: toolResults });
   }
 
+  // Only reachable if the final forced answer came back empty.
   if (!answer) {
     answer =
-      "I looked at a number of sources but ran out of research steps before I could pull the answer together. Try asking a narrower question.";
+      "I looked at a number of sources but couldn't pull an answer together. Try asking a narrower question.";
   }
 
   return { answer, iterations };
